@@ -23,7 +23,6 @@ RUN python -m pip install --upgrade pip \
 
 COPY apps ./apps
 COPY ml ./ml
-COPY api.py main.py ./
 
 EXPOSE 8000
 

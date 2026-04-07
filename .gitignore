@@ -38,6 +38,8 @@ dist/
 # Local generated project outputs
 data/raw/
 reports/
+ml/data/raw/
+ml/reports/
 
 # Docker overrides
 docker-compose.override.yml

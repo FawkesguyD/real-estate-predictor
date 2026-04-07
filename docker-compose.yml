@@ -2,7 +2,7 @@ services:
   real-estate-api:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: apps/api/Dockerfile
     container_name: real-estate-api
     restart: unless-stopped
     ports:
@@ -11,7 +11,7 @@ services:
       HOST: ${HOST:-0.0.0.0}
       PORT: ${PORT:-8000}
       UVICORN_WORKERS: ${UVICORN_WORKERS:-1}
-      MODEL_PATH: ${MODEL_PATH:-/app/artifacts/best_model.joblib}
+      MODEL_PATH: ${MODEL_PATH:-/app/ml/artifacts/best_model.joblib}
       DEFAULT_FX_RATE: ${DEFAULT_FX_RATE:-90}
     healthcheck:
       test:
@@ -19,7 +19,7 @@ services:
           "CMD",
           "python",
           "-c",
-          "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/health').read()",
+          "from urllib.request import urlopen; import os; urlopen(f\"http://127.0.0.1:{os.getenv('PORT', '8000')}/health\").read()",
         ]
       interval: 30s
       timeout: 5s
