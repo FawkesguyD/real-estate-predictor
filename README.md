@@ -1,4 +1,4 @@
-# MVP Proxy Valuation для недвижимости Бишкека
+# MVP Proxy Valuation для недвижимости
 
 ## Что это
 
