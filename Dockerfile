@@ -1,0 +1,32 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    APP_HOME=/app \
+    HOST=0.0.0.0 \
+    PORT=8000 \
+    UVICORN_WORKERS=1 \
+    MODEL_PATH=/app/artifacts/best_model.joblib \
+    DEFAULT_FX_RATE=90
+
+WORKDIR ${APP_HOME}
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+
+RUN python -m pip install --upgrade pip \
+    && python -m pip install -r requirements.txt
+
+COPY api.py inference.py preprocessing.py utils.py train.py evaluate.py data_loading.py main.py ./
+COPY artifacts ./artifacts
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD python -c "from urllib.request import urlopen; import os; urlopen(f'http://127.0.0.1:{os.getenv(\"PORT\", \"8000\")}/health').read()"
+
+CMD ["sh", "-c", "uvicorn api:app --host ${HOST} --port ${PORT} --workers ${UVICORN_WORKERS}"]
