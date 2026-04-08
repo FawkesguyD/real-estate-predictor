@@ -11,6 +11,7 @@
 - `ml/artifacts` хранит бинарные артефакты модели отдельно от кода.
 - `ml/data/raw` и `ml/reports` остаются рядом с ML-кодом как operational outputs.
 - корневые `api.py` и `main.py` сохранены как совместимые entrypoint-обёртки.
+- `docs/architecture/diagrams` содержит Diagram as Code-исходники текущей архитектуры и ключевых runtime/code flows.
 
 ## Принципы роста
 
