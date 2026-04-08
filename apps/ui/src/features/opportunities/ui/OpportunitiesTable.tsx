@@ -3,10 +3,11 @@ import { ScoreBadge } from "./ScoreBadge";
 import styles from "./OpportunitiesTable.module.css";
 import {
   formatArea,
+  formatCurrencyCode,
   formatFloor,
   formatNumber,
+  formatMoney,
   formatPercent,
-  formatPrice,
 } from "../../../shared/lib/format";
 
 type OpportunitiesTableProps = {
@@ -28,12 +29,12 @@ export function OpportunitiesTable({
         <thead>
           <tr>
             <th>Listing</th>
-            <th>Location</th>
-            <th>Specs</th>
+            <th>Asset facts</th>
             <th>Listing price</th>
             <th>Model estimate</th>
-            <th>Investor advantage</th>
-            <th>Potential undervaluation</th>
+            <th>Delta</th>
+            <th>Delta %</th>
+            <th>Why it ranks</th>
             <th>Score</th>
             <th />
           </tr>
@@ -50,27 +51,77 @@ export function OpportunitiesTable({
               >
                 <td>
                   <div className={styles.primaryText}>{item.title}</div>
-                  <div className={styles.secondaryText}>ID {item.listing_id}</div>
-                </td>
-                <td>
-                  <div className={styles.primaryText}>{item.city || "Unknown city"}</div>
-                  <div className={styles.secondaryText}>{item.district || "District not set"}</div>
+                  <div className={styles.secondaryText}>
+                    ID {item.listing_id} · {item.city || "Unknown city"} · {item.district || "District not set"}
+                  </div>
+                  {item.source_url ? (
+                    <a
+                      className={styles.sourceLink}
+                      href={item.source_url}
+                      rel="noreferrer"
+                      target="_blank"
+                    >
+                      Open source listing
+                    </a>
+                  ) : null}
                 </td>
                 <td>
                   <div className={styles.primaryText}>{formatArea(item.area)}</div>
                   <div className={styles.secondaryText}>
                     {formatNumber(item.rooms, 0, " rooms")} · {formatFloor(item.floor, item.total_floors)}
                   </div>
+                  <div className={styles.secondaryText}>
+                    {item.building_type || "Building type n/a"} · {item.condition || "Condition n/a"}
+                  </div>
+                  <div className={styles.secondaryText}>
+                    {item.year_built ? `Built ${item.year_built}` : "Year n/a"} ·{" "}
+                    {item.seller_type || "Seller n/a"}
+                  </div>
                 </td>
-                <td className={styles.numberCell}>{formatPrice(item.listing_price)}</td>
-                <td className={styles.numberCell}>{formatPrice(item.predicted_price)}</td>
-                <td className={styles.deltaCell}>{formatPrice(item.undervaluation_delta)}</td>
-                <td className={styles.percentCell}>{formatPercent(item.undervaluation_percent)}</td>
+                <td className={styles.numberCell}>
+                  <div className={styles.primaryText}>
+                    {formatMoney(item.listing_price, item.listing_currency)}
+                  </div>
+                  <div className={styles.secondaryText}>
+                    Raw listing price · {formatCurrencyCode(item.listing_currency)}
+                  </div>
+                  {item.listing_price_in_comparison_currency !== null &&
+                  item.listing_currency !== item.comparison_currency ? (
+                    <div className={styles.secondaryText}>
+                      Comparison basis:{" "}
+                      {formatMoney(
+                        item.listing_price_in_comparison_currency,
+                        item.comparison_currency,
+                      )}
+                    </div>
+                  ) : null}
+                </td>
+                <td className={styles.numberCell}>
+                  <div className={styles.primaryText}>
+                    {formatMoney(item.predicted_price, item.predicted_price_currency)}
+                  </div>
+                  <div className={styles.secondaryText}>
+                    Model estimate · {formatCurrencyCode(item.predicted_price_currency)}
+                  </div>
+                </td>
+                <td className={styles.deltaCell}>{formatMoney(item.delta_abs, item.comparison_currency)}</td>
+                <td className={styles.percentCell}>{formatPercent(item.delta_pct)}</td>
                 <td>
-                  <ScoreBadge
-                    score={item.score}
-                    undervaluationPercent={item.undervaluation_percent}
-                  />
+                  <div className={styles.primaryText}>{item.explanation_summary}</div>
+                  {item.top_factors.length > 0 ? (
+                    <div className={styles.factors}>
+                      {item.top_factors.slice(0, 3).map((factor) => (
+                        <span className={styles.factorChip} key={factor}>
+                          {factor}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className={styles.secondaryText}>Factors unavailable</div>
+                  )}
+                </td>
+                <td>
+                  <ScoreBadge score={item.score} deltaPct={item.delta_pct} />
                 </td>
                 <td className={styles.actionCell}>
                   <button

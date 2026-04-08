@@ -22,6 +22,18 @@ function toBoolean(value: unknown): boolean {
   return value === true;
 }
 
+function toCurrency(value: unknown, fallback: "USD" | "RUB" = "RUB"): "USD" | "RUB" {
+  return value === "USD" || value === "RUB" ? value : fallback;
+}
+
+function toStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+}
+
 function mapOpportunityItem(payload: unknown, index: number, resourceName: string): Opportunity {
   if (payload === null || typeof payload !== "object") {
     throw new ApiError(`Invalid ${resourceName} item at index ${index}.`, 500);
@@ -30,15 +42,15 @@ function mapOpportunityItem(payload: unknown, index: number, resourceName: strin
   const item = payload as Record<string, unknown>;
   const listingId = toNumber(item.listing_id);
   const predictedPrice = toNumber(item.predicted_price);
-  const undervaluationDelta = toNumber(item.undervaluation_delta);
-  const undervaluationPercent = toNumber(item.undervaluation_percent);
+  const deltaAbs = toNumber(item.delta_abs);
+  const deltaPct = toNumber(item.delta_pct);
   const score = toNumber(item.score);
 
   if (
     listingId === null ||
     predictedPrice === null ||
-    undervaluationDelta === null ||
-    undervaluationPercent === null ||
+    deltaAbs === null ||
+    deltaPct === null ||
     score === null
   ) {
     throw new ApiError(`Invalid ${resourceName} response format.`, 500);
@@ -53,11 +65,25 @@ function mapOpportunityItem(payload: unknown, index: number, resourceName: strin
     rooms: toNumber(item.rooms),
     floor: toNumber(item.floor),
     total_floors: toNumber(item.total_floors),
+    building_type: toStringOrNull(item.building_type),
+    condition: toStringOrNull(item.condition),
+    year_built: toNumber(item.year_built),
+    seller_type: toStringOrNull(item.seller_type),
     listing_price: toNumber(item.listing_price),
+    listing_currency: toCurrency(item.listing_currency),
+    listing_price_in_comparison_currency: toNumber(item.listing_price_in_comparison_currency),
     predicted_price: predictedPrice,
-    undervaluation_delta: undervaluationDelta,
-    undervaluation_percent: undervaluationPercent,
+    predicted_price_currency: toCurrency(item.predicted_price_currency),
+    comparison_currency: toCurrency(item.comparison_currency),
+    fx_rate_used: toNumber(item.fx_rate_used),
+    delta_abs: deltaAbs,
+    delta_pct: deltaPct,
     score,
+    explanation_summary:
+      toStringOrNull(item.explanation_summary) ??
+      "Model estimate is a proxy valuation based on listing data.",
+    top_factors: toStringArray(item.top_factors),
+    source_url: toStringOrNull(item.source_url),
     rank_position: toNumber(item.rank_position),
     is_saved: toBoolean(item.is_saved),
   };

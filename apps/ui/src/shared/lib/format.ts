@@ -1,11 +1,18 @@
-export function formatPrice(value: number | null) {
+export function formatMoney(value: number | null, currency: "USD" | "RUB") {
   if (value === null) {
     return "—";
   }
 
-  return new Intl.NumberFormat("en-US", {
+  const locale = currency === "RUB" ? "ru-RU" : "en-US";
+  return new Intl.NumberFormat(locale, {
+    style: "currency",
+    currency,
     maximumFractionDigits: 0,
   }).format(value);
+}
+
+export function formatCurrencyCode(currency: "USD" | "RUB") {
+  return currency;
 }
 
 export function formatPercent(value: number | null) {

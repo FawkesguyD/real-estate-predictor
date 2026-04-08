@@ -3,7 +3,7 @@ import { OpportunityListResponse } from "../../opportunities/model/types";
 import { mapOpportunityListResponse } from "../../opportunities/api/opportunityMappers";
 
 export async function getShortlist() {
-  const payload = await apiFetch<unknown>("/shortlist");
+  const payload = await apiFetch<unknown>("/shortlist?output_currency=RUB");
   return mapOpportunityListResponse(payload, "shortlist");
 }
 

@@ -7,6 +7,7 @@ import { CURRENT_USER_QUERY_KEY } from "./types";
 export function useCurrentUser() {
   return useQuery({
     queryKey: CURRENT_USER_QUERY_KEY,
+    staleTime: 5 * 60 * 1000,
     queryFn: async () => {
       try {
         return await getCurrentUser();

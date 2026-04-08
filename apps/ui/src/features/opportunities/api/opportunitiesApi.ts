@@ -6,6 +6,7 @@ export async function getOpportunities(sortBy: OpportunitySortBy) {
   const query = new URLSearchParams({
     sort_by: sortBy,
     limit: "100",
+    output_currency: "RUB",
   });
 
   const payload = await apiFetch<unknown>(`/opportunities?${query.toString()}`);

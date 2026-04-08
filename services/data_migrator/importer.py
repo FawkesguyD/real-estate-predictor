@@ -109,6 +109,15 @@ def _extract_city(row: dict[str, str]) -> str | None:
     return None
 
 
+def _count_images(value: str | None) -> int | None:
+    normalized = _clean_text(value)
+    if normalized is None:
+        return None
+
+    items = [item.strip() for item in normalized.split(",") if item.strip()]
+    return len(items) or None
+
+
 def _map_row_to_listing(row: dict[str, str]) -> dict[str, object] | None:
     listing_id = _parse_int(row.get("inner_id"))
     title = _clean_text(row.get("title"))
@@ -129,7 +138,13 @@ def _map_row_to_listing(row: dict[str, str]) -> dict[str, object] | None:
             row.get("formatted_full_info"),
             row.get("formatted_short_info"),
         ),
+        "building_type": _clean_text(row.get("building_type")),
+        "seller_type": _clean_text(row.get("user_type")),
+        "latitude": _parse_decimal(row.get("coordinates_lat")),
+        "longitude": _parse_decimal(row.get("coordinates_lng")),
+        "photo_count": _count_images(row.get("images")),
         "listing_price": _parse_decimal(row.get("price")),
+        "listing_currency": "RUB",
         "source_url": _clean_text(row.get("url")),
     }
 
@@ -173,7 +188,13 @@ def import_listings(csv_path: str | Path | None = None) -> ImportStats:
         "rooms",
         "floor",
         "total_floors",
+        "building_type",
+        "seller_type",
+        "latitude",
+        "longitude",
+        "photo_count",
         "listing_price",
+        "listing_currency",
         "source_url",
     )
 

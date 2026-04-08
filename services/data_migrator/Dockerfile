@@ -15,6 +15,9 @@ RUN python -m pip install --upgrade pip \
 
 COPY alembic.ini ./alembic.ini
 COPY alembic ./alembic
+COPY apps/__init__.py ./apps/__init__.py
+COPY apps/api ./apps/api
+COPY ml ./ml
 COPY shared ./shared
 COPY services ./services
 COPY office-sale.csv ./office-sale.csv

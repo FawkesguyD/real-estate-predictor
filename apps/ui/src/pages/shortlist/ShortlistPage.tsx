@@ -28,12 +28,14 @@ export function ShortlistPage() {
   const opportunitiesQuery = useQuery({
     queryKey: ["opportunities", sortBy],
     queryFn: () => getOpportunities(sortBy),
+    staleTime: 30 * 1000,
   });
 
   const shortlistQuery = useQuery({
     queryKey: ["shortlist"],
     queryFn: getShortlist,
     enabled: viewMode === "shortlist",
+    staleTime: 30 * 1000,
   });
 
   const toggleShortlistMutation = useMutation({
@@ -65,6 +67,8 @@ export function ShortlistPage() {
         tone="error"
         title="Workspace unavailable"
         description="The current investor session could not be restored."
+        actionLabel="Retry"
+        onAction={() => void currentUserQuery.refetch()}
       />
     );
   }
@@ -80,8 +84,8 @@ export function ShortlistPage() {
           <p className={styles.kicker}>Ranked opportunities</p>
           <h2 className={styles.heading}>Scan the strongest investor advantage first</h2>
           <p className={styles.description}>
-            The model estimate is a proxy valuation. Use it to spot potential undervaluation quickly,
-            then validate with market judgment.
+            Compare the raw listing price with the model estimate in one investor-facing table.
+            Use it to screen for potential underpricing, then validate with local market judgment.
           </p>
         </div>
         <div className={styles.controls}>
@@ -109,10 +113,41 @@ export function ShortlistPage() {
               value={sortBy}
             >
               <option value="score">Score</option>
-              <option value="undervaluation_percent">Undervaluation %</option>
+              <option value="undervaluation_percent">Delta %</option>
             </select>
           </div>
         </div>
+      </section>
+
+      <section className={styles.helpGrid}>
+        <article className={styles.helpCard}>
+          <h3>Model estimate</h3>
+          <p>
+            A proxy valuation trained on listing data. It is a screening signal, not an exact
+            transaction-based market price.
+          </p>
+        </article>
+        <article className={styles.helpCard}>
+          <h3>Delta abs</h3>
+          <p>
+            The model estimate minus the listing price in the comparison currency. Positive delta can
+            indicate potential undervaluation.
+          </p>
+        </article>
+        <article className={styles.helpCard}>
+          <h3>Delta %</h3>
+          <p>
+            The same gap in percentage terms. It helps compare opportunities across different ticket
+            sizes.
+          </p>
+        </article>
+        <article className={styles.helpCard}>
+          <h3>How to use it</h3>
+          <p>
+            Start with high score and positive delta, then inspect the source listing, property facts,
+            and explanation before making an investment call.
+          </p>
+        </article>
       </section>
 
       {toggleShortlistMutation.isError ? (
@@ -137,6 +172,8 @@ export function ShortlistPage() {
           description={
             isApiError(activeError) ? activeError.message : "The shortlist feed is currently unavailable."
           }
+          actionLabel="Retry"
+          onAction={() => void activeQuery.refetch()}
         />
       ) : null}
 

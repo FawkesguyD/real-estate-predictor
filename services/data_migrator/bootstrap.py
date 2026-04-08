@@ -135,6 +135,16 @@ def bootstrap_database(csv_path: str | Path | None = None) -> ImportStats:
         stats.imported,
         stats.skipped,
     )
+    LOGGER.info("valuation_seed_start")
+    from apps.api.api import ensure_listing_valuations
+
+    with SessionLocal() as session:
+        valuation_count = ensure_listing_valuations(
+            session,
+            only_missing=False,
+            include_explanations=False,
+        )
+    LOGGER.info("valuation_seed_done rows=%s", valuation_count)
     ensure_demo_user()
     verify_database_state(database_url)
     LOGGER.info("bootstrap_done")

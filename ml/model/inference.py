@@ -13,7 +13,9 @@ from ml.model.preprocessing import FeatureConfig, prepare_inference_frame
 
 DEFAULT_BASE_CURRENCY = "USD"
 DEFAULT_OUTPUT_CURRENCY = "USD"
+DEFAULT_LISTING_CURRENCY = "USD"
 SUPPORTED_OUTPUT_CURRENCIES = {"USD", "RUB", "BOTH"}
+SUPPORTED_PRICE_CURRENCIES = {"USD", "RUB"}
 DEFAULT_FX_RATE = 90.0
 VALUATION_NOTE = (
     "MVP proxy valuation based on listing prices; not a transaction-based fair market valuation."
@@ -36,6 +38,21 @@ def _coerce_optional_float(value: Any) -> float | None:
     return float(value)
 
 
+def _normalize_price_currency(
+    currency: str | None,
+    default: str = DEFAULT_LISTING_CURRENCY,
+) -> Literal["USD", "RUB"]:
+    if currency is None or pd.isna(currency):
+        normalized = default
+    else:
+        normalized = str(currency)
+    normalized = normalized.upper()
+    if normalized not in SUPPORTED_PRICE_CURRENCIES:
+        supported = ", ".join(sorted(SUPPORTED_PRICE_CURRENCIES))
+        raise ValueError(f"Unsupported currency '{currency}'. Expected one of: {supported}.")
+    return normalized  # type: ignore[return-value]
+
+
 def _normalize_output_currency(output_currency: str | None) -> Literal["USD", "RUB", "BOTH"]:
     normalized = (output_currency or DEFAULT_OUTPUT_CURRENCY).upper()
     if normalized not in SUPPORTED_OUTPUT_CURRENCIES:
@@ -45,67 +62,195 @@ def _normalize_output_currency(output_currency: str | None) -> Literal["USD", "R
 
 
 def _resolve_fx_rate(
-    output_currency: Literal["USD", "RUB", "BOTH"],
+    conversion_required: bool,
     fx_rate: float | None,
     default_fx_rate: float,
 ) -> float | None:
-    if output_currency == "USD":
+    if not conversion_required:
         return None
 
     resolved_rate = default_fx_rate if fx_rate is None else fx_rate
     if resolved_rate is None or resolved_rate <= 0:
-        raise ValueError("fx_rate must be positive when output_currency is RUB or BOTH.")
+        raise ValueError("fx_rate must be positive when USD/RUB conversion is required.")
     return float(resolved_rate)
+
+
+def _convert_amount(
+    amount: float | None,
+    source_currency: str,
+    target_currency: str,
+    fx_rate_used: float | None,
+) -> float | None:
+    if amount is None:
+        return None
+
+    normalized_source = _normalize_price_currency(source_currency)
+    normalized_target = _normalize_price_currency(target_currency, default=DEFAULT_BASE_CURRENCY)
+    if normalized_source == normalized_target:
+        return float(amount)
+
+    if fx_rate_used is None:
+        raise ValueError("fx_rate is required for USD/RUB conversion.")
+
+    if normalized_source == "USD" and normalized_target == "RUB":
+        return float(amount) * fx_rate_used
+    if normalized_source == "RUB" and normalized_target == "USD":
+        return float(amount) / fx_rate_used
+
+    raise ValueError(f"Unsupported conversion from {normalized_source} to {normalized_target}.")
 
 
 def _normalize_object_features(
     object_features: dict[str, Any],
     bundle: LoadedModelBundle,
 ) -> dict[str, Any]:
-    normalized = dict(object_features)
-    if bundle.target_column not in normalized and "listing_price" in normalized:
-        normalized[bundle.target_column] = normalized["listing_price"]
-    return normalized
+    return dict(object_features)
 
 
 def _normalize_objects_collection(
     objects: pd.DataFrame | list[dict[str, Any]] | dict[str, Any],
     bundle: LoadedModelBundle,
 ) -> pd.DataFrame:
-    raw_frame = (
+    return (
         pd.DataFrame([objects])
         if isinstance(objects, dict)
         else pd.DataFrame(objects)
         if isinstance(objects, list)
         else objects.copy()
     )
-    if bundle.target_column not in raw_frame.columns and "listing_price" in raw_frame.columns:
-        raw_frame[bundle.target_column] = raw_frame["listing_price"]
-    return raw_frame
+
+
+def _needs_fx_conversion_for_object(
+    object_features: dict[str, Any],
+    output_currency: Literal["USD", "RUB", "BOTH"],
+) -> bool:
+    listing_price = _coerce_optional_float(object_features.get("listing_price"))
+    listing_currency = _normalize_price_currency(object_features.get("listing_currency"))
+    return output_currency != DEFAULT_BASE_CURRENCY or (
+        listing_price is not None and listing_currency != DEFAULT_BASE_CURRENCY
+    )
+
+
+def _needs_fx_conversion_for_collection(
+    raw_frame: pd.DataFrame,
+    output_currency: Literal["USD", "RUB", "BOTH"],
+) -> bool:
+    if output_currency != DEFAULT_BASE_CURRENCY:
+        return True
+
+    if "listing_price" not in raw_frame.columns:
+        return False
+
+    if "listing_currency" not in raw_frame.columns:
+        return False
+
+    listing_price = pd.to_numeric(raw_frame["listing_price"], errors="coerce")
+    listing_currencies = raw_frame["listing_currency"].map(
+        lambda value: _normalize_price_currency(value)
+    )
+    return bool((listing_price.notna() & (listing_currencies != DEFAULT_BASE_CURRENCY)).any())
+
+
+def _prepare_object_features_for_valuation(
+    object_features: dict[str, Any],
+    bundle: LoadedModelBundle,
+    fx_rate_used: float | None,
+) -> dict[str, Any]:
+    normalized = dict(object_features)
+    normalized["listing_currency"] = _normalize_price_currency(normalized.get("listing_currency"))
+
+    has_base_listing_price = bundle.target_column in normalized and not pd.isna(normalized[bundle.target_column])
+    if not has_base_listing_price:
+        listing_price = _coerce_optional_float(normalized.get("listing_price"))
+        if listing_price is not None:
+            normalized[bundle.target_column] = _convert_amount(
+                listing_price,
+                normalized["listing_currency"],
+                DEFAULT_BASE_CURRENCY,
+                fx_rate_used,
+            )
+
+    return normalized
+
+
+def _prepare_objects_collection_for_valuation(
+    objects: pd.DataFrame | list[dict[str, Any]] | dict[str, Any],
+    bundle: LoadedModelBundle,
+    fx_rate_used: float | None,
+) -> pd.DataFrame:
+    raw_frame = _normalize_objects_collection(objects, bundle)
+    prepared = raw_frame.copy()
+
+    if "listing_currency" in prepared.columns:
+        prepared["listing_currency"] = prepared["listing_currency"].map(
+            lambda value: _normalize_price_currency(value)
+        )
+    else:
+        prepared["listing_currency"] = DEFAULT_LISTING_CURRENCY
+
+    if bundle.target_column not in prepared.columns:
+        prepared[bundle.target_column] = np.nan
+
+    if "listing_price" not in prepared.columns:
+        return prepared
+
+    missing_base_price = prepared[bundle.target_column].isna() & prepared["listing_price"].notna()
+    if not missing_base_price.any():
+        return prepared
+
+    prepared.loc[missing_base_price, bundle.target_column] = prepared.loc[missing_base_price].apply(
+        lambda row: _convert_amount(
+            _coerce_optional_float(row.get("listing_price")),
+            row.get("listing_currency") or DEFAULT_LISTING_CURRENCY,
+            DEFAULT_BASE_CURRENCY,
+            fx_rate_used,
+        ),
+        axis=1,
+    )
+
+    return prepared
 
 
 def _build_currency_block(
     expected_price_proxy_usd: float,
-    listing_price_usd: float | None,
-    delta_abs_usd: float | None,
-    delta_pct: float | None,
+    listing_price: float | None,
+    listing_currency: str,
     currency: Literal["USD", "RUB"],
     fx_rate_used: float | None,
 ) -> dict[str, float | None]:
-    multiplier = 1.0 if currency == "USD" else float(fx_rate_used or 1.0)
+    expected_price_proxy = _convert_amount(
+        expected_price_proxy_usd,
+        DEFAULT_BASE_CURRENCY,
+        currency,
+        fx_rate_used,
+    )
+    listing_price_in_comparison_currency = _convert_amount(
+        listing_price,
+        listing_currency,
+        currency,
+        fx_rate_used,
+    )
+    delta_abs = None
+    delta_pct = None
+    if expected_price_proxy is not None and listing_price_in_comparison_currency is not None:
+        delta_abs = expected_price_proxy - listing_price_in_comparison_currency
+        if listing_price_in_comparison_currency != 0:
+            delta_pct = delta_abs / listing_price_in_comparison_currency
+
     return {
-        "expected_price_proxy": expected_price_proxy_usd * multiplier,
-        "listing_price": None if listing_price_usd is None else listing_price_usd * multiplier,
-        "delta_abs": None if delta_abs_usd is None else delta_abs_usd * multiplier,
+        "expected_price_proxy": expected_price_proxy,
+        "comparison_currency": currency,
+        "predicted_price_currency": currency,
+        "listing_price_in_comparison_currency": listing_price_in_comparison_currency,
+        "delta_abs": delta_abs,
         "delta_pct": delta_pct,
     }
 
 
 def _build_price_outputs(
     expected_price_proxy_usd: float,
-    listing_price_usd: float | None,
-    delta_abs_usd: float | None,
-    delta_pct: float | None,
+    listing_price: float | None,
+    listing_currency: str,
     output_currency: Literal["USD", "RUB", "BOTH"],
     fx_rate_used: float | None,
 ) -> dict[str, dict[str, float | None]]:
@@ -114,9 +259,8 @@ def _build_price_outputs(
     if output_currency in {"USD", "BOTH"}:
         price_outputs["USD"] = _build_currency_block(
             expected_price_proxy_usd=expected_price_proxy_usd,
-            listing_price_usd=listing_price_usd,
-            delta_abs_usd=delta_abs_usd,
-            delta_pct=delta_pct,
+            listing_price=listing_price,
+            listing_currency=listing_currency,
             currency="USD",
             fx_rate_used=fx_rate_used,
         )
@@ -124,9 +268,8 @@ def _build_price_outputs(
     if output_currency in {"RUB", "BOTH"}:
         price_outputs["RUB"] = _build_currency_block(
             expected_price_proxy_usd=expected_price_proxy_usd,
-            listing_price_usd=listing_price_usd,
-            delta_abs_usd=delta_abs_usd,
-            delta_pct=delta_pct,
+            listing_price=listing_price,
+            listing_currency=listing_currency,
             currency="RUB",
             fx_rate_used=fx_rate_used,
         )
@@ -515,18 +658,26 @@ def predict_proxy_valuation_from_bundle(
     include_explanation: bool = True,
 ) -> dict[str, Any]:
     normalized_output_currency = _normalize_output_currency(output_currency)
-    fx_rate_used = _resolve_fx_rate(normalized_output_currency, fx_rate, default_fx_rate)
-    prediction = predict_expected_price_from_bundle(object_features, bundle)
+    fx_rate_used = _resolve_fx_rate(
+        _needs_fx_conversion_for_object(object_features, normalized_output_currency),
+        fx_rate,
+        default_fx_rate,
+    )
+    prepared_features = _prepare_object_features_for_valuation(object_features, bundle, fx_rate_used)
+    prediction = predict_expected_price_from_bundle(prepared_features, bundle)
+    listing_price = _coerce_optional_float(prepared_features.get("listing_price"))
+    listing_currency = _normalize_price_currency(prepared_features.get("listing_currency"))
 
     response: dict[str, Any] = {
         "base_currency": DEFAULT_BASE_CURRENCY,
         "output_currency": normalized_output_currency,
+        "listing_price": listing_price,
+        "listing_currency": listing_currency,
         "fx_rate_used": fx_rate_used,
         "price_outputs": _build_price_outputs(
             expected_price_proxy_usd=float(prediction["expected_price_proxy"]),
-            listing_price_usd=_coerce_optional_float(prediction["listing_price"]),
-            delta_abs_usd=_coerce_optional_float(prediction["delta_abs"]),
-            delta_pct=_coerce_optional_float(prediction["delta_pct"]),
+            listing_price=listing_price,
+            listing_currency=listing_currency,
             output_currency=normalized_output_currency,
             fx_rate_used=fx_rate_used,
         ),
@@ -534,7 +685,7 @@ def predict_proxy_valuation_from_bundle(
     }
 
     if include_explanation:
-        response.update(explain_prediction_from_bundle(object_features, bundle))
+        response.update(explain_prediction_from_bundle(prepared_features, bundle))
 
     return response
 
@@ -569,10 +720,15 @@ def score_proxy_valuations_from_bundle(
     listing_id_column: str = "listing_id",
 ) -> list[dict[str, Any]]:
     normalized_output_currency = _normalize_output_currency(output_currency)
-    fx_rate_used = _resolve_fx_rate(normalized_output_currency, fx_rate, default_fx_rate)
-
     raw_frame = _normalize_objects_collection(objects, bundle)
-    scored = score_objects_from_bundle(raw_frame, bundle, listing_price_column=bundle.target_column)
+    fx_rate_used = _resolve_fx_rate(
+        _needs_fx_conversion_for_collection(raw_frame, normalized_output_currency),
+        fx_rate,
+        default_fx_rate,
+    )
+
+    prepared_frame = _prepare_objects_collection_for_valuation(raw_frame, bundle, fx_rate_used)
+    scored = score_objects_from_bundle(prepared_frame, bundle, listing_price_column=bundle.target_column)
     if "input_index" not in scored.columns:
         scored["input_index"] = np.arange(len(scored))
     else:
@@ -589,12 +745,13 @@ def score_proxy_valuations_from_bundle(
             "listing_id": row.get(listing_id_column),
             "base_currency": DEFAULT_BASE_CURRENCY,
             "output_currency": normalized_output_currency,
+            "listing_price": _coerce_optional_float(row.get("listing_price")),
+            "listing_currency": _normalize_price_currency(row.get("listing_currency")),
             "fx_rate_used": fx_rate_used,
             "price_outputs": _build_price_outputs(
                 expected_price_proxy_usd=float(row["expected_price_proxy"]),
-                listing_price_usd=_coerce_optional_float(row.get("listing_price")),
-                delta_abs_usd=_coerce_optional_float(row.get("delta_abs")),
-                delta_pct=_coerce_optional_float(row.get("delta_pct")),
+                listing_price=_coerce_optional_float(row.get("listing_price")),
+                listing_currency=row.get("listing_currency") or DEFAULT_LISTING_CURRENCY,
                 output_currency=normalized_output_currency,
                 fx_rate_used=fx_rate_used,
             ),

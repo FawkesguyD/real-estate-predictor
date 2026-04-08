@@ -92,9 +92,47 @@
   color: #8d3b3b;
 }
 
+.helpGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 20px;
+}
+
+.helpCard {
+  padding: 16px 18px;
+  border-radius: 20px;
+  border: 1px solid var(--color-border);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(244, 248, 250, 0.88));
+  box-shadow: var(--shadow-soft);
+}
+
+.helpCard h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.helpCard p {
+  margin: 0;
+  color: var(--color-muted-strong);
+  line-height: 1.5;
+  font-size: 14px;
+}
+
 @media (max-width: 980px) {
   .hero {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .helpGrid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .helpGrid {
+    grid-template-columns: 1fr;
   }
 }
