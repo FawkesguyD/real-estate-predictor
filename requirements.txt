@@ -7,3 +7,7 @@ requests
 catboost
 fastapi
 uvicorn
+sqlalchemy
+alembic
+psycopg[binary]
+itsdangerous

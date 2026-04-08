@@ -1,0 +1,95 @@
+.tableWrap {
+  overflow: auto;
+  border-radius: 24px;
+  border: 1px solid var(--color-border);
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: var(--shadow-soft);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 1120px;
+}
+
+.table thead th {
+  text-align: left;
+  padding: 16px 18px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-muted);
+  background: rgba(245, 248, 250, 0.95);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.table tbody td {
+  padding: 18px;
+  border-bottom: 1px solid rgba(223, 230, 235, 0.9);
+  vertical-align: top;
+}
+
+.table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.leadingRow {
+  background:
+    linear-gradient(90deg, rgba(214, 228, 236, 0.42) 0, rgba(214, 228, 236, 0.12) 18px, transparent 18px);
+}
+
+.primaryText {
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.secondaryText {
+  margin-top: 5px;
+  color: var(--color-muted);
+  font-size: 13px;
+}
+
+.numberCell,
+.deltaCell,
+.percentCell {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.deltaCell,
+.percentCell {
+  color: var(--color-success);
+  font-weight: 700;
+}
+
+.actionCell {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.saveButton,
+.removeButton {
+  border-radius: 999px;
+  padding: 10px 14px;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.saveButton {
+  background: #1f5d7d;
+  color: white;
+}
+
+.removeButton {
+  background: white;
+  color: var(--color-text);
+  border-color: var(--color-border-strong);
+}
+
+.saveButton:disabled,
+.removeButton:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}

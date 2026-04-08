@@ -8,7 +8,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PORT=8000 \
     UVICORN_WORKERS=1 \
     MODEL_PATH=/app/ml/artifacts/best_model.joblib \
-    DEFAULT_FX_RATE=90
+    DEFAULT_FX_RATE=90 \
+    DATABASE_URL=postgresql+psycopg://realestate:realestate@postgres:5432/realestate
 
 WORKDIR ${APP_HOME}
 
@@ -23,6 +24,9 @@ RUN python -m pip install --upgrade pip \
 
 COPY apps ./apps
 COPY ml ./ml
+COPY shared ./shared
+COPY alembic ./alembic
+COPY alembic.ini ./
 COPY api.py main.py ./
 
 EXPOSE 8000

@@ -2,13 +2,21 @@ from __future__ import annotations
 
 import math
 import os
+from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.orm import Session
+from sqlalchemy.orm import aliased
+from starlette.middleware.sessions import SessionMiddleware
 
+from apps.api.deps import get_current_user, get_db_session
 from ml.model.inference import (
     DEFAULT_FX_RATE,
     LoadedModelBundle,
@@ -17,10 +25,21 @@ from ml.model.inference import (
     score_proxy_valuations_from_bundle,
 )
 from ml.model.utils import ARTIFACTS_DIR
+from shared.auth import verify_password
+from shared.db.models import Listing, ShortlistItem, User, Valuation
 
 
 DEFAULT_MODEL_PATH = Path(os.getenv("MODEL_PATH", ARTIFACTS_DIR / "best_model.joblib"))
 API_DEFAULT_FX_RATE = float(os.getenv("DEFAULT_FX_RATE", str(DEFAULT_FX_RATE)))
+SESSION_COOKIE_NAME = os.getenv("SESSION_COOKIE_NAME", "real_estate_session")
+SESSION_SECRET = os.getenv("SESSION_SECRET", "dev-session-secret-change-me")
+SESSION_MAX_AGE_SECONDS = int(os.getenv("SESSION_MAX_AGE_SECONDS", str(60 * 60 * 12)))
+DEFAULT_UI_ALLOWED_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
+
+
+def _parse_allowed_origins() -> list[str]:
+    raw_value = os.getenv("UI_ALLOWED_ORIGINS", DEFAULT_UI_ALLOWED_ORIGINS)
+    return [origin.strip() for origin in raw_value.split(",") if origin.strip()]
 
 
 class CurrencyPriceOutput(BaseModel):
@@ -104,13 +123,72 @@ class BatchPredictionResponse(BaseModel):
     results: list[BatchPredictionItem]
 
 
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class AuthUserResponse(BaseModel):
+    id: int
+    name: str
+    email: str
+
+
+class OpportunityItem(BaseModel):
+    listing_id: int
+    title: str
+    city: str | None = None
+    district: str | None = None
+    area: float | None = None
+    rooms: int | None = None
+    floor: int | None = None
+    total_floors: int | None = None
+    listing_price: float | None = None
+    predicted_price: float
+    undervaluation_delta: float
+    undervaluation_percent: float
+    score: float
+    rank_position: int | None = None
+    is_saved: bool = False
+
+
+class OpportunityListResponse(BaseModel):
+    items: list[OpportunityItem]
+
+
+class SaveShortlistRequest(BaseModel):
+    listing_id: int
+    rank_position: int | None = Field(default=None, ge=1)
+
+
+class ShortlistMutationResponse(BaseModel):
+    listing_id: int
+    saved: bool
+
+
 app = FastAPI(
     title="Bishkek Real Estate MVP Proxy-Valuation API",
-    version="0.1.0",
+    version="0.2.0",
     description=(
         "MVP API for proxy valuation on listing data. "
         "Predictions represent expected_price_proxy, not a transaction-based market price."
     ),
+)
+
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=SESSION_SECRET,
+    session_cookie=SESSION_COOKIE_NAME,
+    max_age=SESSION_MAX_AGE_SECONDS,
+    same_site="lax",
+    https_only=False,
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_parse_allowed_origins(),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -132,10 +210,319 @@ def _sanitize_for_json(value: Any) -> Any:
     return value
 
 
+def _to_float(value: Decimal | float | int | None) -> float | None:
+    if value is None:
+        return None
+    return float(value)
+
+
+def _serialize_user(user: User) -> AuthUserResponse:
+    return AuthUserResponse(
+        id=user.id,
+        name=user.name,
+        email=user.email,
+    )
+
+
+def _serialize_opportunity(row: dict[str, Any]) -> OpportunityItem:
+    return OpportunityItem(
+        listing_id=row["listing_id"],
+        title=row["title"],
+        city=row["city"],
+        district=row["district"],
+        area=_to_float(row["area"]),
+        rooms=row["rooms"],
+        floor=row["floor"],
+        total_floors=row["total_floors"],
+        listing_price=_to_float(row["listing_price"]),
+        predicted_price=float(row["predicted_price"]),
+        undervaluation_delta=float(row["undervaluation_delta"]),
+        undervaluation_percent=float(row["undervaluation_percent"]),
+        score=float(row["score"]),
+        rank_position=row.get("rank_position"),
+        is_saved=bool(row["is_saved"]),
+    )
+
+
+def _to_quantized_decimal(value: float, precision: str) -> Decimal:
+    return Decimal(str(value)).quantize(Decimal(precision))
+
+
+def _build_scoring_payload(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "listing_id": row["listing_id"],
+        "district": row["district"],
+        "rooms": row["rooms"],
+        "floor": row["floor"],
+        "total_floors": row["total_floors"],
+        "listing_price": _to_float(row["listing_price"]),
+        "price_usd": _to_float(row["listing_price"]),
+        "area": _to_float(row["area"]),
+        "total_area_m2": _to_float(row["area"]),
+    }
+
+
+def _build_display_score(rank_position: int, total_items: int) -> float:
+    if total_items <= 1:
+        return 1.0
+    return 1.0 - ((rank_position - 1) / (total_items - 1))
+
+
+def _ensure_valuations(session: Session) -> None:
+    missing_valuations_count = session.execute(
+        select(func.count(Listing.id))
+        .select_from(Listing)
+        .outerjoin(Valuation, Valuation.listing_id == Listing.id)
+        .where(
+            Listing.listing_price.is_not(None),
+            Valuation.id.is_(None),
+        )
+    ).scalar_one()
+
+    if missing_valuations_count == 0:
+        return
+
+    listing_rows = session.execute(
+        select(
+            Listing.id.label("listing_id"),
+            Listing.district.label("district"),
+            Listing.area.label("area"),
+            Listing.rooms.label("rooms"),
+            Listing.floor.label("floor"),
+            Listing.total_floors.label("total_floors"),
+            Listing.listing_price.label("listing_price"),
+        )
+        .where(Listing.listing_price.is_not(None))
+        .order_by(Listing.id.asc())
+    ).mappings().all()
+
+    if not listing_rows:
+        return
+
+    bundle = get_model_bundle()
+    scored_results = score_proxy_valuations_from_bundle(
+        objects=[_build_scoring_payload(row) for row in listing_rows],
+        bundle=bundle,
+        rank_results=True,
+        include_explanations=False,
+    )
+
+    total_results = len(scored_results)
+    valuation_rows: list[dict[str, Any]] = []
+    for result in scored_results:
+        listing_id = result.get("listing_id")
+        price_outputs = result.get("price_outputs", {})
+        usd_output = price_outputs.get("USD", {})
+        if listing_id is None:
+            continue
+
+        rank_position = int(result.get("undervaluation_rank") or total_results)
+        predicted_price = float(usd_output["expected_price_proxy"])
+        undervaluation_delta = float(usd_output["delta_abs"] or 0.0)
+        undervaluation_percent = float(usd_output["delta_pct"] or 0.0)
+        score = _build_display_score(rank_position, total_results)
+
+        valuation_rows.append(
+            {
+                "listing_id": int(listing_id),
+                "predicted_price": _to_quantized_decimal(predicted_price, "0.01"),
+                "undervaluation_delta": _to_quantized_decimal(undervaluation_delta, "0.01"),
+                "undervaluation_percent": _to_quantized_decimal(undervaluation_percent, "0.0001"),
+                "score": _to_quantized_decimal(score, "0.0001"),
+            }
+        )
+
+    if not valuation_rows:
+        return
+
+    statement = insert(Valuation).values(valuation_rows)
+    statement = statement.on_conflict_do_update(
+        index_elements=[Valuation.listing_id],
+        set_={
+            "predicted_price": statement.excluded.predicted_price,
+            "undervaluation_delta": statement.excluded.undervaluation_delta,
+            "undervaluation_percent": statement.excluded.undervaluation_percent,
+            "score": statement.excluded.score,
+        },
+    )
+    session.execute(statement)
+    session.commit()
+
+
+def _build_opportunity_base_query(user_id: int):
+    saved_shortlist_item = aliased(ShortlistItem)
+    is_saved_expression = (
+        select(saved_shortlist_item.id)
+        .where(
+            saved_shortlist_item.user_id == user_id,
+            saved_shortlist_item.listing_id == Listing.id,
+        )
+        .exists()
+    )
+
+    return select(
+        Listing.id.label("listing_id"),
+        Listing.title.label("title"),
+        Listing.city.label("city"),
+        Listing.district.label("district"),
+        Listing.area.label("area"),
+        Listing.rooms.label("rooms"),
+        Listing.floor.label("floor"),
+        Listing.total_floors.label("total_floors"),
+        Listing.listing_price.label("listing_price"),
+        Valuation.predicted_price.label("predicted_price"),
+        Valuation.undervaluation_delta.label("undervaluation_delta"),
+        Valuation.undervaluation_percent.label("undervaluation_percent"),
+        Valuation.score.label("score"),
+        is_saved_expression.label("is_saved"),
+    ).join(Valuation, Valuation.listing_id == Listing.id)
+
+
+def _apply_sorting(statement, sort_by: Literal["score", "undervaluation_percent"]):
+    if sort_by == "undervaluation_percent":
+        return statement.order_by(
+            Valuation.undervaluation_percent.desc(),
+            Valuation.score.desc(),
+            Listing.id.asc(),
+        )
+    return statement.order_by(
+        Valuation.score.desc(),
+        Valuation.undervaluation_percent.desc(),
+        Listing.id.asc(),
+    )
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     get_model_bundle()
     return {"status": "ok"}
+
+
+@app.post("/auth/login", response_model=AuthUserResponse)
+def login(
+    payload: LoginRequest,
+    request: Request,
+    session: Session = Depends(get_db_session),
+) -> AuthUserResponse:
+    user = session.execute(
+        select(User).where(User.email == payload.email.strip().lower())
+    ).scalar_one_or_none()
+
+    if user is None or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password.",
+        )
+
+    request.session.clear()
+    request.session["user_id"] = user.id
+    return _serialize_user(user)
+
+
+@app.post("/auth/logout")
+def logout(request: Request) -> dict[str, str]:
+    request.session.clear()
+    return {"status": "ok"}
+
+
+@app.get("/auth/me", response_model=AuthUserResponse)
+def auth_me(current_user: User = Depends(get_current_user)) -> AuthUserResponse:
+    return _serialize_user(current_user)
+
+
+@app.get("/opportunities", response_model=OpportunityListResponse)
+def get_opportunities(
+    sort_by: Literal["score", "undervaluation_percent"] = Query(default="score"),
+    limit: int = Query(default=100, ge=1, le=500),
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_db_session),
+) -> OpportunityListResponse:
+    _ensure_valuations(session)
+    statement = _build_opportunity_base_query(current_user.id)
+    statement = _apply_sorting(statement, sort_by).limit(limit)
+    rows = session.execute(statement).mappings().all()
+    return OpportunityListResponse(items=[_serialize_opportunity(row) for row in rows])
+
+
+@app.get("/shortlist", response_model=OpportunityListResponse)
+def get_shortlist(
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_db_session),
+) -> OpportunityListResponse:
+    _ensure_valuations(session)
+    statement = (
+        _build_opportunity_base_query(current_user.id)
+        .join(
+            ShortlistItem,
+            (ShortlistItem.listing_id == Listing.id) & (ShortlistItem.user_id == current_user.id),
+        )
+        .add_columns(ShortlistItem.rank_position.label("rank_position"))
+        .order_by(
+            ShortlistItem.rank_position.asc(),
+            Valuation.score.desc(),
+            Listing.id.asc(),
+        )
+    )
+    rows = session.execute(statement).mappings().all()
+    return OpportunityListResponse(items=[_serialize_opportunity(row) for row in rows])
+
+
+@app.post("/shortlist", response_model=ShortlistMutationResponse)
+def save_shortlist_item(
+    payload: SaveShortlistRequest,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_db_session),
+) -> ShortlistMutationResponse:
+    _ensure_valuations(session)
+    listing_exists = session.execute(
+        select(Listing.id).where(Listing.id == payload.listing_id)
+    ).scalar_one_or_none()
+    if listing_exists is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Listing not found.")
+
+    existing_item = session.execute(
+        select(ShortlistItem).where(
+            ShortlistItem.user_id == current_user.id,
+            ShortlistItem.listing_id == payload.listing_id,
+        )
+    ).scalar_one_or_none()
+
+    if existing_item is None:
+        max_rank = session.execute(
+            select(func.max(ShortlistItem.rank_position)).where(ShortlistItem.user_id == current_user.id)
+        ).scalar_one()
+        next_rank = int(max_rank or 0) + 1
+        existing_item = ShortlistItem(
+            user_id=current_user.id,
+            listing_id=payload.listing_id,
+            rank_position=payload.rank_position or next_rank,
+        )
+        session.add(existing_item)
+    elif payload.rank_position is not None:
+        existing_item.rank_position = payload.rank_position
+
+    session.commit()
+    return ShortlistMutationResponse(listing_id=payload.listing_id, saved=True)
+
+
+@app.delete("/shortlist/{listing_id}", response_model=ShortlistMutationResponse)
+def delete_shortlist_item(
+    listing_id: int,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_db_session),
+) -> ShortlistMutationResponse:
+    existing_item = session.execute(
+        select(ShortlistItem).where(
+            ShortlistItem.user_id == current_user.id,
+            ShortlistItem.listing_id == listing_id,
+        )
+    ).scalar_one_or_none()
+
+    if existing_item is not None:
+        session.delete(existing_item)
+        session.commit()
+
+    return ShortlistMutationResponse(listing_id=listing_id, saved=False)
 
 
 @app.post("/predict", response_model=PredictionResponse)
@@ -196,6 +583,10 @@ def root() -> dict[str, Any]:
         "default_fx_rate": API_DEFAULT_FX_RATE,
         "docs_url": "/docs",
         "health_url": "/health",
+        "login_url": "/auth/login",
+        "current_user_url": "/auth/me",
+        "opportunities_url": "/opportunities",
+        "shortlist_url": "/shortlist",
         "predict_url": "/predict",
         "batch_predict_url": "/predict/batch",
     }
